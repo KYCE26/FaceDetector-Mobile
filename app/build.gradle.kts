@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization) // <-- TAMBAHKAN BARIS INI
 }
 
 android {
@@ -40,6 +41,9 @@ android {
 }
 
 dependencies {
+    implementation("io.ktor:ktor-client-android:2.3.9")
+    implementation("io.ktor:ktor-client-content-negotiation:2.3.9")
+    implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.9")
     val camerax_version = "1.3.1" // Perbaikan di sini
     implementation("androidx.camera:camera-core:${camerax_version}")
     implementation("androidx.camera:camera-camera2:${camerax_version}")
