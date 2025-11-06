@@ -26,6 +26,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset // Pastikan import ini ada
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -51,29 +52,20 @@ import java.util.concurrent.Executors
 import kotlin.OptIn
 
 // --- State untuk Kontrol ---
-enum class AppState { IDLE, LOADING } // Status global aplikasi
+enum class AppState { IDLE, LOADING }
 
 // --- State untuk Liveness (Ide 1) ---
 enum class LivenessState { IDLE, WAITING_FOR_BLINK, BLINK_DETECTED }
 
-// --- State untuk Enrollment (Ide 2 - VERSI 9 ANGLE) ---
+// --- State untuk Enrollment (VERSI 4-ANGLE BARU) ---
 enum class EnrollmentState {
     IDLE, // Menunggu tombol 'mulai'
 
-    // Baris Tengah
-    GET_FRONT_CENTER, SENDING_FRONT_CENTER,
-    GET_FRONT_LEFT, SENDING_FRONT_LEFT,
-    GET_FRONT_RIGHT, SENDING_FRONT_RIGHT,
-
-    // Baris Atas (Melihat ke Atas)
-    GET_TOP_CENTER, SENDING_TOP_CENTER,
-    GET_TOP_LEFT, SENDING_TOP_LEFT,
-    GET_TOP_RIGHT, SENDING_TOP_RIGHT,
-
-    // Baris Bawah (Melihat ke Bawah)
-    GET_BOTTOM_CENTER, SENDING_BOTTOM_CENTER,
-    GET_BOTTOM_LEFT, SENDING_BOTTOM_LEFT,
-    GET_BOTTOM_RIGHT, SENDING_BOTTOM_RIGHT,
+    // 4 Langkah baru
+    GET_CENTER_NEUTRAL, SENDING_CENTER_NEUTRAL,
+    GET_CENTER_SMILE, SENDING_CENTER_SMILE,
+    GET_LEFT, SENDING_LEFT,
+    GET_RIGHT, SENDING_RIGHT,
 
     FINISHED // Selesai
 }
@@ -129,12 +121,12 @@ fun FaceDetectionScreen(
     cameraExecutor: ExecutorService,
     onRecognitionSuccess: (RecognizeResponse) -> Unit
 ) {
-    val context = LocalContext.current // <-- Perbaikan dari error sebelumnya
+    val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var detectedFaces by remember { mutableStateOf<List<Face>>(emptyList()) }
     var faceEmbedding by remember { mutableStateOf<FloatArray?>(null) }
     var imageSize by remember { mutableStateOf(Size(0f, 0f)) }
-    val faceNetModel = remember { FaceNetModel(context) } // <-- Perbaikan dari error sebelumnya
+    val faceNetModel = remember { FaceNetModel(context) }
     val coroutineScope = rememberCoroutineScope()
 
     // --- State UI ---
@@ -149,34 +141,34 @@ fun FaceDetectionScreen(
     var enrollmentMessage by remember { mutableStateOf("") }
 
     // --- State untuk Liveness & Angle (Ide 1 & 2) ---
-    var headEulerAngleX by remember { mutableStateOf(0f) } // Atas/Bawah
-    var headEulerAngleY by remember { mutableStateOf(0f) } // Kiri/Kanan
+    var headEulerAngleX by remember { mutableStateOf(0f) }
+    var headEulerAngleY by remember { mutableStateOf(0f) }
     var leftEyeOpenProb by remember { mutableStateOf(1f) }
     var rightEyeOpenProb by remember { mutableStateOf(1f) }
+    var smileProb by remember { mutableStateOf(0f) } // <-- STATE BARU
+
     var livenessState by remember { mutableStateOf(LivenessState.IDLE) }
 
 
     val faceDetector = remember {
         val options = FaceDetectorOptions.Builder()
             .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
-            .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL) // Untuk Liveness (Mata)
-            .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL) // Untuk Angle (X dan Y)
+            .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL) // Untuk Liveness (Mata) & Senyum
+            .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL) // Untuk Angle
             .build()
         FaceDetection.getClient(options)
     }
 
-    // --- Helper Lambda untuk Mengirim Data Pendaftaran ---
-    // Ini untuk menghindari duplikasi kode
     val registerAngle: (FloatArray, EnrollmentState) -> Unit = { embedding, nextState ->
         enrollmentMessage = "Bagus! Angle terambil. Mengirim..."
         coroutineScope.launch {
             try {
                 ApiService.registerFace(regUserId, regUserName, embedding.toList())
-                enrollmentState = nextState // Lanjut ke state berikutnya
-                enrollmentMessage = "" // Hapus pesan 'mengirim'
+                enrollmentState = nextState
+                enrollmentMessage = ""
             } catch (e: Exception) {
                 enrollmentMessage = "Gagal kirim. Coba lagi."
-                enrollmentState = EnrollmentState.values()[enrollmentState.ordinal - 1]
+                enrollmentState = EnrollmentState.values()[enrollmentState.ordinal - 1] // Kembali
             }
         }
     }
@@ -199,11 +191,12 @@ fun FaceDetectionScreen(
                                 if (faces.isNotEmpty()) {
                                     val firstFace = faces.first()
 
-                                    // --- BACA DATA BARU (Angle X dan Y) ---
-                                    headEulerAngleX = firstFace.headEulerAngleX // Atas/Bawah
-                                    headEulerAngleY = firstFace.headEulerAngleY // Kiri/Kanan
+                                    // --- BACA SEMUA DATA ---
+                                    headEulerAngleX = firstFace.headEulerAngleX
+                                    headEulerAngleY = firstFace.headEulerAngleY
                                     firstFace.leftEyeOpenProbability?.let { leftEyeOpenProb = it }
                                     firstFace.rightEyeOpenProbability?.let { rightEyeOpenProb = it }
+                                    firstFace.smilingProbability?.let { smileProb = it } // <-- BACA SENYUM
 
                                     val originalBitmap = imageProxy.toBitmap()
                                     if (originalBitmap != null) {
@@ -211,89 +204,49 @@ fun FaceDetectionScreen(
                                         faceEmbedding = faceNetModel.getFaceEmbedding(softwareBitmap, firstFace.boundingBox)
                                     }
 
-                                    // --- OTOMATISASI UNTUK IDE 1 & 2 (REALTIME) ---
-
-                                    // 1. Cek Liveness (jika diminta)
+                                    // --- Cek Liveness (jika diminta) ---
                                     if (livenessState == LivenessState.WAITING_FOR_BLINK) {
                                         if (leftEyeOpenProb < 0.3 && rightEyeOpenProb < 0.3) {
                                             livenessState = LivenessState.BLINK_DETECTED
                                         }
                                     }
 
-                                    // 2. Cek Wizard Pendaftaran (jika sedang berjalan)
+                                    // --- Cek Wizard Pendaftaran (jika sedang berjalan) ---
                                     val currentEmbedding = faceEmbedding
                                     if (currentEmbedding != null && appState == AppState.IDLE) {
 
-                                        // Variabel helper untuk angle
-                                        val isLookingUp = headEulerAngleX > 20
-                                        val isLookingDown = headEulerAngleX < -20
-                                        val isLookingCenterV = headEulerAngleX > -10 && headEulerAngleX < 10
-
+                                        // Variabel helper
+                                        val isSmiling = smileProb > 0.8 // 80% smile
                                         val isLookingLeft = headEulerAngleY > 30
                                         val isLookingRight = headEulerAngleY < -30
                                         val isLookingCenterH = headEulerAngleY > -10 && headEulerAngleY < 10
 
                                         when (enrollmentState) {
-                                            // Baris Tengah
-                                            EnrollmentState.GET_FRONT_CENTER -> {
-                                                if (isLookingCenterV && isLookingCenterH) {
-                                                    enrollmentState = EnrollmentState.SENDING_FRONT_CENTER
-                                                    registerAngle(currentEmbedding, EnrollmentState.GET_FRONT_LEFT)
+                                            EnrollmentState.GET_CENTER_NEUTRAL -> {
+                                                if (isLookingCenterH && !isSmiling) {
+                                                    enrollmentState = EnrollmentState.SENDING_CENTER_NEUTRAL
+                                                    registerAngle(currentEmbedding, EnrollmentState.GET_CENTER_SMILE)
                                                 }
                                             }
-                                            EnrollmentState.GET_FRONT_LEFT -> {
-                                                if (isLookingCenterV && isLookingLeft) {
-                                                    enrollmentState = EnrollmentState.SENDING_FRONT_LEFT
-                                                    registerAngle(currentEmbedding, EnrollmentState.GET_FRONT_RIGHT)
+                                            EnrollmentState.GET_CENTER_SMILE -> {
+                                                if (isLookingCenterH && isSmiling) {
+                                                    enrollmentState = EnrollmentState.SENDING_CENTER_SMILE
+                                                    registerAngle(currentEmbedding, EnrollmentState.GET_LEFT)
                                                 }
                                             }
-                                            EnrollmentState.GET_FRONT_RIGHT -> {
-                                                if (isLookingCenterV && isLookingRight) {
-                                                    enrollmentState = EnrollmentState.SENDING_FRONT_RIGHT
-                                                    registerAngle(currentEmbedding, EnrollmentState.GET_TOP_CENTER) // Lanjut ke baris atas
+                                            EnrollmentState.GET_LEFT -> {
+                                                if (isLookingLeft) {
+                                                    enrollmentState = EnrollmentState.SENDING_LEFT
+                                                    registerAngle(currentEmbedding, EnrollmentState.GET_RIGHT)
                                                 }
                                             }
-
-                                            // Baris Atas
-                                            EnrollmentState.GET_TOP_CENTER -> {
-                                                if (isLookingUp && isLookingCenterH) {
-                                                    enrollmentState = EnrollmentState.SENDING_TOP_CENTER
-                                                    registerAngle(currentEmbedding, EnrollmentState.GET_TOP_LEFT)
+                                            EnrollmentState.GET_RIGHT -> {
+                                                if (isLookingRight) {
+                                                    enrollmentState = EnrollmentState.SENDING_RIGHT
+                                                    registerAngle(currentEmbedding, EnrollmentState.FINISHED)
                                                 }
                                             }
-                                            EnrollmentState.GET_TOP_LEFT -> {
-                                                if (isLookingUp && isLookingLeft) {
-                                                    enrollmentState = EnrollmentState.SENDING_TOP_LEFT
-                                                    registerAngle(currentEmbedding, EnrollmentState.GET_TOP_RIGHT)
-                                                }
-                                            }
-                                            EnrollmentState.GET_TOP_RIGHT -> {
-                                                if (isLookingUp && isLookingRight) {
-                                                    enrollmentState = EnrollmentState.SENDING_TOP_RIGHT
-                                                    registerAngle(currentEmbedding, EnrollmentState.GET_BOTTOM_CENTER) // Lanjut ke baris bawah
-                                                }
-                                            }
-
-                                            // Baris Bawah
-                                            EnrollmentState.GET_BOTTOM_CENTER -> {
-                                                if (isLookingDown && isLookingCenterH) {
-                                                    enrollmentState = EnrollmentState.SENDING_BOTTOM_CENTER
-                                                    registerAngle(currentEmbedding, EnrollmentState.GET_BOTTOM_LEFT)
-                                                }
-                                            }
-                                            EnrollmentState.GET_BOTTOM_LEFT -> {
-                                                if (isLookingDown && isLookingLeft) {
-                                                    enrollmentState = EnrollmentState.SENDING_BOTTOM_LEFT
-                                                    registerAngle(currentEmbedding, EnrollmentState.GET_BOTTOM_RIGHT)
-                                                }
-                                            }
-                                            EnrollmentState.GET_BOTTOM_RIGHT -> {
-                                                if (isLookingDown && isLookingRight) {
-                                                    enrollmentState = EnrollmentState.SENDING_BOTTOM_RIGHT
-                                                    registerAngle(currentEmbedding, EnrollmentState.FINISHED) // SELESAI
-                                                }
-                                            }
-                                            else -> {} // State lain diabaikan
+                                            else -> {}
                                         }
                                     }
 
@@ -321,14 +274,44 @@ fun FaceDetectionScreen(
                 .verticalScroll(rememberScrollState())
         ) {
 
-            Box(modifier = Modifier.fillMaxWidth().height(400.dp)) {
+            // =========================================================
+            // ▼▼▼ BOX KAMERA SEKARANG DENGAN OVAL GUIDE ▼▼▼
+            // =========================================================
+            Box(modifier = Modifier
+                .fillMaxWidth()
+                .height(400.dp)) {
+
+                // 1. Kamera (di paling bawah)
                 CameraView(modifier = Modifier.fillMaxSize(), analyzer = imageAnalyzer, lifecycleOwner = lifecycleOwner)
+
+                // 2. Overlay Wajah (Kuning)
                 FaceOverlay(modifier = Modifier.fillMaxSize(), faces = detectedFaces, imageSize = imageSize)
+
+                // 3. OVAL GUIDE (di atas segalanya)
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val ovalWidth = size.width * 0.7f // 70% lebar
+                    val ovalHeight = ovalWidth * 1.3f // oval potrait
+
+                    drawOval(
+                        color = Color.White.copy(alpha = 0.6f),
+                        topLeft = Offset(
+                            x = (size.width - ovalWidth) / 2, // Center H
+                            y = (size.height - ovalHeight) / 2 // Center V
+                        ),
+                        size = androidx.compose.ui.geometry.Size(ovalWidth, ovalHeight),
+                        style = Stroke(width = 4.dp.toPx()) // Garis
+                    )
+                }
+
+                // 4. Teks Status
                 Text(
                     text = if (faceEmbedding != null) "Wajah Terdeteksi" else "Arahkan ke Wajah",
                     color = Color.White, modifier = Modifier.align(Alignment.TopCenter).padding(8.dp)
                 )
             }
+            // =========================================================
+            // ▲▲▲ AKHIR DARI BOX KAMERA ▲▲▲
+            // =========================================================
 
             TabRow(selectedTabIndex = selectedTabIndex) {
                 Tab(
@@ -359,19 +342,17 @@ fun FaceDetectionScreen(
                 }
 
                 when (selectedTabIndex) {
-                    // ======================
-                    // === TAB PRESENSI (Ide 1) ===
-                    // ======================
+                    // === TAB PRESENSI ===
                     0 -> Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier.fillMaxWidth()
                     ) {
 
                         if (livenessState == LivenessState.WAITING_FOR_BLINK) {
-                            Text("Tahan... SEKARANG KEDIPKAN MATA ANDA",
+                            Text("Posisikan wajah di OVAL, lalu KEDIPKAN MATA ANDA",
                                 color = Color.Blue, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
                         } else {
-                            Text("Arahkan wajah Anda ke kamera dan tekan tombol di bawah untuk melakukan presensi.")
+                            Text("Posisikan wajah Anda di dalam OVAL dan tekan tombol di bawah.")
                         }
 
                         Spacer(modifier = Modifier.height(16.dp))
@@ -379,7 +360,7 @@ fun FaceDetectionScreen(
                             onClick = {
                                 val embeddingAtClick = faceEmbedding
                                 if (embeddingAtClick == null) {
-                                    currentMessage = "Error: Wajah hilang. Coba tekan lagi."
+                                    currentMessage = "Error: Wajah hilang. Posisikan di oval."
                                     return@Button
                                 }
 
@@ -425,9 +406,7 @@ fun FaceDetectionScreen(
                         }
                     }
 
-                    // ===================
-                    // === TAB DAFTAR (Ide 2 - 9 Angle) ===
-                    // ===================
+                    // === TAB DAFTAR (Ide 2 - 4 Angle) ===
                     1 -> Column(modifier = Modifier.fillMaxWidth()) {
 
                         OutlinedTextField(
@@ -453,65 +432,40 @@ fun FaceDetectionScreen(
                                 if(regUserId.isBlank() || regUserName.isBlank()) {
                                     currentMessage = "Error: Isi ID dan Nama lebih dulu."
                                 } else {
-                                    enrollmentState = EnrollmentState.GET_FRONT_CENTER // Mulai wizard dari langkah pertama
+                                    enrollmentState = EnrollmentState.GET_CENTER_NEUTRAL
                                     currentMessage = ""
                                 }
                             },
                             enabled = appState == AppState.IDLE && enrollmentState == EnrollmentState.IDLE && faceEmbedding != null
                         ) {
-                            Text("Mulai Pendaftaran Terpandu (9 Angle)")
+                            Text("Mulai Pendaftaran Terpandu (4 Angle)")
                         }
 
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        // --- UI WIZARD & Instruksi ---
                         val instructionColor = Color.Blue
-
-                        // Tampilkan pesan progres (jika ada)
                         if (enrollmentMessage.isNotBlank()) {
                             Text(enrollmentMessage, modifier = Modifier.padding(top = 8.dp))
                         }
 
                         when (enrollmentState) {
                             EnrollmentState.IDLE -> {
-                                Text("Isi data di atas lalu tekan 'Mulai' untuk mendaftarkan 9 angle wajah.")
+                                Text("Posisikan wajah Anda di dalam OVAL, lalu tekan 'Mulai'.")
                             }
-
-                            // Baris Tengah
-                            EnrollmentState.GET_FRONT_CENTER, EnrollmentState.SENDING_FRONT_CENTER -> {
-                                Text("1/9: Lihat LURUS ke kamera...", fontWeight = FontWeight.Bold, color = instructionColor)
+                            EnrollmentState.GET_CENTER_NEUTRAL, EnrollmentState.SENDING_CENTER_NEUTRAL -> {
+                                Text("1/4: Wajah di OVAL, lihat LURUS & NETRAL...", fontWeight = FontWeight.Bold, color = instructionColor)
                             }
-                            EnrollmentState.GET_FRONT_LEFT, EnrollmentState.SENDING_FRONT_LEFT -> {
-                                Text("2/9: Lihat LURUS, lalu TENGOK KE KIRI...", fontWeight = FontWeight.Bold, color = instructionColor)
+                            EnrollmentState.GET_CENTER_SMILE, EnrollmentState.SENDING_CENTER_SMILE -> {
+                                Text("2/4: Wajah di OVAL, lihat LURUS & SENYUM LEBAR!", fontWeight = FontWeight.Bold, color = instructionColor)
                             }
-                            EnrollmentState.GET_FRONT_RIGHT, EnrollmentState.SENDING_FRONT_RIGHT -> {
-                                Text("3/9: Lihat LURUS, lalu TENGOK KE KANAN...", fontWeight = FontWeight.Bold, color = instructionColor)
+                            EnrollmentState.GET_LEFT, EnrollmentState.SENDING_LEFT -> {
+                                Text("3/4: Wajah di OVAL, TENGOK KE KIRI...", fontWeight = FontWeight.Bold, color = instructionColor)
                             }
-
-                            // Baris Atas
-                            EnrollmentState.GET_TOP_CENTER, EnrollmentState.SENDING_TOP_CENTER -> {
-                                Text("4/9: DONGAKKAN KEPALA ke atas...", fontWeight = FontWeight.Bold, color = instructionColor)
+                            EnrollmentState.GET_RIGHT, EnrollmentState.SENDING_RIGHT -> {
+                                Text("4/4: Wajah di OVAL, TENGOK KE KANAN...", fontWeight = FontWeight.Bold, color = instructionColor)
                             }
-                            EnrollmentState.GET_TOP_LEFT, EnrollmentState.SENDING_TOP_LEFT -> {
-                                Text("5/9: DONGAK & TENGOK KE KIRI...", fontWeight = FontWeight.Bold, color = instructionColor)
-                            }
-                            EnrollmentState.GET_TOP_RIGHT, EnrollmentState.SENDING_TOP_RIGHT -> {
-                                Text("6/9: DONGAK & TENGOK KE KANAN...", fontWeight = FontWeight.Bold, color = instructionColor)
-                            }
-
-                            // Baris Bawah
-                            EnrollmentState.GET_BOTTOM_CENTER, EnrollmentState.SENDING_BOTTOM_CENTER -> {
-                                Text("7/9: TUNDUKKAN KEPALA ke bawah...", fontWeight = FontWeight.Bold, color = instructionColor)
-                            }
-                            EnrollmentState.GET_BOTTOM_LEFT, EnrollmentState.SENDING_BOTTOM_LEFT -> {
-                                Text("8/9: TUNDUK & TENGOK KE KIRI...", fontWeight = FontWeight.Bold, color = instructionColor)
-                            }
-                            EnrollmentState.GET_BOTTOM_RIGHT, EnrollmentState.SENDING_BOTTOM_RIGHT -> {
-                                Text("9/9: TUNDUK & TENGOK KE KANAN...", fontWeight = FontWeight.Bold, color = instructionColor)
-                            }
-
                             EnrollmentState.FINISHED -> {
-                                Text("Pendaftaran Selesai! 9 angle telah tersimpan.", fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
+                                Text("Pendaftaran Selesai! 4 angle telah tersimpan.", fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
                                 Button(onClick = { enrollmentState = EnrollmentState.IDLE }) {
                                     Text("Daftarkan Ulang / Tambah Angle")
                                 }
