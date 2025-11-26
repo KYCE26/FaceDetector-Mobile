@@ -13,10 +13,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 
-// =========================================================
-// ▼▼▼ PENTING: GANTI DENGAN IP KOMPUTER ANDA ▼▼▼
-// =========================================================
-private const val BASE_URL = "https://web-production-dff34.up.railway.app" // <-- PASTIKAN INI IP ANDA
+private const val BASE_URL = "https://web-production-dff34.up.railway.app"
 
 // --- Data Class untuk JSON (Request) ---
 @Serializable

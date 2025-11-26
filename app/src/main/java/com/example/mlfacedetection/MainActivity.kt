@@ -1,14 +1,15 @@
 @file:OptIn(ExperimentalMaterial3Api::class, ExperimentalGetImage::class)
 
-package com.example.mlfacedetection // Pastikan ini adalah package Anda
+package com.example.mlfacedetection
 
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
-import android.graphics.*
+import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -18,18 +19,39 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Badge
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset // Pastikan import ini ada
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
@@ -51,30 +73,24 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.OptIn
 
-// --- State untuk Kontrol ---
+// --- State Navigasi ---
+enum class Screen { HOME, PRESENCE, REGISTER }
+
+// --- State Global ---
 enum class AppState { IDLE, LOADING }
-
-// --- State untuk Liveness (Ide 1) ---
 enum class LivenessState { IDLE, WAITING_FOR_BLINK, BLINK_DETECTED }
-
-// --- State untuk Enrollment (VERSI 4-ANGLE BARU) ---
 enum class EnrollmentState {
-    IDLE, // Menunggu tombol 'mulai'
-
-    // 4 Langkah baru
+    IDLE, // Input Form Mode
     GET_CENTER_NEUTRAL, SENDING_CENTER_NEUTRAL,
     GET_CENTER_SMILE, SENDING_CENTER_SMILE,
-    GET_LEFT, SENDING_LEFT,
-    GET_RIGHT, SENDING_RIGHT,
-
-    FINISHED // Selesai
+    GET_LEFT, SENDING_LEFT, GET_RIGHT, SENDING_RIGHT,
+    FINISHED
 }
-
 
 class MainActivity : ComponentActivity() {
     private lateinit var cameraExecutor: ExecutorService
     private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
-        if (isGranted) { setContent { MLFaceDetectionTheme { MainAppScreen(cameraExecutor) } }
+        if (isGranted) { setContent { MLFaceDetectionTheme { AppNavigation(cameraExecutor) } }
         } else { setContent { MLFaceDetectionTheme { PermissionDeniedScreen() } } }
     }
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -82,7 +98,7 @@ class MainActivity : ComponentActivity() {
         cameraExecutor = Executors.newSingleThreadExecutor()
         when (PackageManager.PERMISSION_GRANTED) {
             ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) -> {
-                setContent { MLFaceDetectionTheme { MainAppScreen(cameraExecutor) } }
+                setContent { MLFaceDetectionTheme { AppNavigation(cameraExecutor) } }
             }
             else -> requestPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
@@ -93,383 +109,443 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// --- Composable Utama yang Mengatur Tampilan ---
-@SuppressLint("UnrememberedMutableState")
+// ==========================================
+// 1. NAVIGASI UTAMA (MODERN TRANSITION)
+// ==========================================
+@OptIn(ExperimentalAnimationApi::class)
 @Composable
-fun MainAppScreen(cameraExecutor: ExecutorService) {
-    var presensiResult by remember { mutableStateOf<RecognizeResponse?>(null) }
+fun AppNavigation(cameraExecutor: ExecutorService) {
+    var currentScreen by remember { mutableStateOf(Screen.HOME) }
 
-    if (presensiResult != null) {
-        AttendanceResultScreen(
-            result = presensiResult!!,
-            onBack = { presensiResult = null }
-        )
-    } else {
-        FaceDetectionScreen(
-            cameraExecutor = cameraExecutor,
-            onRecognitionSuccess = { response ->
-                presensiResult = response
-            }
-        )
+    AnimatedContent(
+        targetState = currentScreen,
+        transitionSpec = {
+            fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
+        }, label = "ScreenTransition"
+    ) { screen ->
+        when (screen) {
+            Screen.HOME -> HomeScreen(
+                onNavigateToPresence = { currentScreen = Screen.PRESENCE },
+                onNavigateToRegister = { currentScreen = Screen.REGISTER }
+            )
+            Screen.PRESENCE -> PresenceFeatureScreen(
+                cameraExecutor = cameraExecutor,
+                onBack = { currentScreen = Screen.HOME }
+            )
+            Screen.REGISTER -> RegisterFeatureScreen(
+                cameraExecutor = cameraExecutor,
+                onBack = { currentScreen = Screen.HOME }
+            )
+        }
     }
 }
 
-@androidx.annotation.OptIn(ExperimentalGetImage::class)
-@SuppressLint("UnrememberedMutableState")
+// ==========================================
+// 2. HOME SCREEN (DASHBOARD)
+// ==========================================
 @Composable
-fun FaceDetectionScreen(
-    cameraExecutor: ExecutorService,
-    onRecognitionSuccess: (RecognizeResponse) -> Unit
-) {
+fun HomeScreen(onNavigateToPresence: () -> Unit, onNavigateToRegister: () -> Unit) {
+    Scaffold(containerColor = Color(0xFFF5F7FA)) { padding ->
+        Column(
+            modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Spacer(modifier = Modifier.height(40.dp))
+            Icon(Icons.Default.Face, null, Modifier.size(64.dp), tint = MaterialTheme.colorScheme.primary)
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("Sistem Presensi AI", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text("Pilih menu operasional", color = Color.Gray)
+            Spacer(modifier = Modifier.height(48.dp))
+
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                MenuCard("Presensi", Icons.Default.Fingerprint, Color(0xFF4CAF50), Modifier.weight(1f), onNavigateToPresence)
+                MenuCard("Daftar Wajah", Icons.Default.PersonAdd, Color(0xFF2196F3), Modifier.weight(1f), onNavigateToRegister)
+            }
+            Spacer(modifier = Modifier.weight(1f))
+            Text("Versi 4.0 - UI Enhanced", fontSize = 12.sp, color = Color.LightGray)
+        }
+    }
+}
+
+@Composable
+fun MenuCard(title: String, icon: ImageVector, color: Color, modifier: Modifier, onClick: () -> Unit) {
+    Card(
+        modifier = modifier.height(160.dp).clickable { onClick() },
+        elevation = CardDefaults.cardElevation(4.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(Modifier.size(60.dp).background(color.copy(0.1f), CircleShape), contentAlignment = Alignment.Center) {
+                Icon(icon, null, tint = color, modifier = Modifier.size(32.dp))
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(title, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+        }
+    }
+}
+
+// ==========================================
+// 3. SCREEN PRESENSI (FULL SCREEN)
+// ==========================================
+@Composable
+fun PresenceFeatureScreen(cameraExecutor: ExecutorService, onBack: () -> Unit) {
+    BackHandler { onBack() }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val coroutineScope = rememberCoroutineScope()
+
     var detectedFaces by remember { mutableStateOf<List<Face>>(emptyList()) }
     var faceEmbedding by remember { mutableStateOf<FloatArray?>(null) }
     var imageSize by remember { mutableStateOf(Size(0f, 0f)) }
-    val faceNetModel = remember { FaceNetModel(context) }
-    val coroutineScope = rememberCoroutineScope()
 
-    // --- State UI ---
-    var selectedTabIndex by remember { mutableStateOf(0) }
     var appState by remember { mutableStateOf(AppState.IDLE) }
-    var currentMessage by remember { mutableStateOf("") }
-
-    // --- State untuk Form Daftar ---
-    var regUserId by remember { mutableStateOf("") }
-    var regUserName by remember { mutableStateOf("") }
-    var enrollmentState by remember { mutableStateOf(EnrollmentState.IDLE) }
-    var enrollmentMessage by remember { mutableStateOf("") }
-
-    // --- State untuk Liveness & Angle (Ide 1 & 2) ---
-    var headEulerAngleX by remember { mutableStateOf(0f) }
-    var headEulerAngleY by remember { mutableStateOf(0f) }
+    var livenessState by remember { mutableStateOf(LivenessState.IDLE) }
+    var currentMessage by remember { mutableStateOf("Posisikan wajah di dalam oval") }
+    var isFlashOn by remember { mutableStateOf(false) }
+    var presensiResult by remember { mutableStateOf<RecognizeResponse?>(null) }
     var leftEyeOpenProb by remember { mutableStateOf(1f) }
     var rightEyeOpenProb by remember { mutableStateOf(1f) }
-    var smileProb by remember { mutableStateOf(0f) } // <-- STATE BARU
 
-    var livenessState by remember { mutableStateOf(LivenessState.IDLE) }
-
-
+    val faceNetModel = remember { FaceNetModel(context) }
     val faceDetector = remember {
         val options = FaceDetectorOptions.Builder()
             .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
-            .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL) // Untuk Liveness (Mata) & Senyum
-            .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL) // Untuk Angle
+            .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
             .build()
         FaceDetection.getClient(options)
     }
 
+    val imageAnalyzer = remember {
+        ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build().also {
+            it.setAnalyzer(cameraExecutor) { imageProxy ->
+                val mediaImage = imageProxy.image
+                if (mediaImage != null) {
+                    val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+                    imageSize = Size(imageProxy.width.toFloat(), imageProxy.height.toFloat())
+                    faceDetector.process(image).addOnSuccessListener { faces ->
+                        detectedFaces = faces
+                        if (faces.isNotEmpty()) {
+                            val face = faces.first()
+                            face.leftEyeOpenProbability?.let { leftEyeOpenProb = it }
+                            face.rightEyeOpenProbability?.let { rightEyeOpenProb = it }
+                            val bmp = imageProxy.toBitmap()
+                            if (bmp != null) {
+                                faceEmbedding = faceNetModel.getFaceEmbedding(bmp.copy(Bitmap.Config.ARGB_8888, true), face.boundingBox)
+                            }
+
+                            if (livenessState == LivenessState.WAITING_FOR_BLINK) {
+                                if (leftEyeOpenProb < 0.4 && rightEyeOpenProb < 0.4) livenessState = LivenessState.BLINK_DETECTED
+                            }
+                        } else { faceEmbedding = null }
+                    }.addOnCompleteListener { imageProxy.close() }
+                } else { imageProxy.close() }
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        CameraView(modifier = Modifier.fillMaxSize(), analyzer = imageAnalyzer, lifecycleOwner = lifecycleOwner)
+        FlashAndOvalOverlay(imageSize = imageSize, isFlashOn = isFlashOn)
+
+        // Header
+        Row(Modifier.fillMaxWidth().padding(top = 48.dp, start = 16.dp)) {
+            IconButton(onClick = onBack, modifier = Modifier.background(Color.Black.copy(0.5f), CircleShape)) {
+                Icon(Icons.Default.ArrowBack, null, tint = Color.White)
+            }
+        }
+
+        // Floating Status
+        if (presensiResult == null) {
+            Card(
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 100.dp).widthIn(max = 300.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.Black.copy(0.7f)),
+                shape = RoundedCornerShape(24.dp)
+            ) {
+                Text(currentMessage, color = Color.White, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp))
+            }
+
+            Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp, start = 24.dp, end = 24.dp)) {
+                Button(
+                    onClick = {
+                        val snapshot = faceEmbedding
+                        if (snapshot == null) { currentMessage = "Wajah tidak terdeteksi!"; return@Button }
+
+                        currentMessage = "Tahan... KEDIPKAN MATA SEKARANG!"
+                        livenessState = LivenessState.WAITING_FOR_BLINK
+                        appState = AppState.LOADING
+                        isFlashOn = true
+
+                        coroutineScope.launch {
+                            var timeout = 0
+                            while (livenessState != LivenessState.BLINK_DETECTED && timeout < 80) { delay(50); timeout++ }
+                            isFlashOn = false
+                            if (livenessState == LivenessState.BLINK_DETECTED) {
+                                currentMessage = "Verifikasi..."
+                                try {
+                                    val res = ApiService.recognizeFace(snapshot.toList())
+                                    presensiResult = res
+                                } catch (e: ClientRequestException) {
+                                    currentMessage = if(e.response.status == HttpStatusCode.NotFound) "Gagal: Wajah tidak dikenali" else "Error Server"
+                                    appState = AppState.IDLE
+                                } catch (e: Exception) {
+                                    currentMessage = "Error Koneksi"
+                                    appState = AppState.IDLE
+                                }
+                            } else {
+                                currentMessage = "Gagal: Tidak ada kedipan mata."
+                                appState = AppState.IDLE
+                            }
+                            livenessState = LivenessState.IDLE
+                        }
+                    },
+                    enabled = faceEmbedding != null && appState == AppState.IDLE,
+                    modifier = Modifier.fillMaxWidth().height(56.dp)
+                ) {
+                    if (appState == AppState.LOADING) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.Black)
+                    else { Icon(Icons.Default.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("Mulai Presensi") }
+                }
+            }
+        }
+
+        if (presensiResult != null) {
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(0.8f)), contentAlignment = Alignment.Center) {
+                Card(Modifier.padding(32.dp).fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(32.dp)) {
+                        Icon(Icons.Default.CheckCircle, null, tint = Color(0xFF4CAF50), modifier = Modifier.size(64.dp))
+                        Text("Berhasil!", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Halo, ${presensiResult!!.name}", style = MaterialTheme.typography.titleMedium)
+                        Text("ID: ${presensiResult!!.user_id}", color = Color.Gray)
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Text("${"%.1f".format(presensiResult!!.similarity * 100)}%", fontSize = 48.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2196F3))
+                        Text("Akurasi", color = Color.Gray)
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Selesai") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ==========================================
+// 4. SCREEN DAFTAR (FORM DULU -> BARU KAMERA)
+// ==========================================
+@Composable
+fun RegisterFeatureScreen(cameraExecutor: ExecutorService, onBack: () -> Unit) {
+    BackHandler { onBack() }
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val coroutineScope = rememberCoroutineScope()
+
+    // Logic States
+    var enrollmentState by remember { mutableStateOf(EnrollmentState.IDLE) } // IDLE = Form Input, Lainnya = Kamera
+    var currentMessage by remember { mutableStateOf("") }
+    var regUserId by remember { mutableStateOf("") }
+    var regUserName by remember { mutableStateOf("") }
+
+    // Face Data
+    var faceEmbedding by remember { mutableStateOf<FloatArray?>(null) }
+    var headEulerAngleY by remember { mutableStateOf(0f) }
+    var smileProb by remember { mutableStateOf(0f) }
+    var imageSize by remember { mutableStateOf(Size(0f, 0f)) }
+
+    val faceNetModel = remember { FaceNetModel(context) }
+    val faceDetector = remember {
+        val options = FaceDetectorOptions.Builder().setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST).setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL).setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL).build()
+        FaceDetection.getClient(options)
+    }
+
     val registerAngle: (FloatArray, EnrollmentState) -> Unit = { embedding, nextState ->
-        enrollmentMessage = "Bagus! Angle terambil. Mengirim..."
+        currentMessage = "Mengirim data..."
         coroutineScope.launch {
             try {
                 ApiService.registerFace(regUserId, regUserName, embedding.toList())
                 enrollmentState = nextState
-                enrollmentMessage = ""
+                currentMessage = ""
             } catch (e: Exception) {
-                enrollmentMessage = "Gagal kirim. Coba lagi."
-                enrollmentState = EnrollmentState.values()[enrollmentState.ordinal - 1] // Kembali
+                currentMessage = "Gagal kirim. Ulangi langkah ini."
+                enrollmentState = EnrollmentState.values()[enrollmentState.ordinal - 1]
             }
         }
     }
-
 
     val imageAnalyzer = remember {
-        ImageAnalysis.Builder()
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .build()
-            .also {
-                it.setAnalyzer(cameraExecutor) { imageProxy ->
-                    val mediaImage = imageProxy.image
-                    if (mediaImage != null) {
-                        val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-                        imageSize = Size(imageProxy.width.toFloat(), imageProxy.height.toFloat())
+        ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build().also {
+            it.setAnalyzer(cameraExecutor) { imageProxy ->
+                // HANYA PROSES GAMBAR JIKA SUDAH MASUK MODE KAMERA (Hemat Baterai)
+                if (enrollmentState == EnrollmentState.IDLE) {
+                    imageProxy.close()
+                    return@setAnalyzer
+                }
 
-                        faceDetector.process(image)
-                            .addOnSuccessListener { faces ->
-                                detectedFaces = faces
-                                if (faces.isNotEmpty()) {
-                                    val firstFace = faces.first()
+                val mediaImage = imageProxy.image
+                if (mediaImage != null) {
+                    val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+                    imageSize = Size(imageProxy.width.toFloat(), imageProxy.height.toFloat())
+                    faceDetector.process(image).addOnSuccessListener { faces ->
+                        if (faces.isNotEmpty()) {
+                            val face = faces.first()
+                            headEulerAngleY = face.headEulerAngleY
+                            face.smilingProbability?.let { smileProb = it }
+                            val bmp = imageProxy.toBitmap()
+                            if (bmp != null) {
+                                faceEmbedding = faceNetModel.getFaceEmbedding(bmp.copy(Bitmap.Config.ARGB_8888, true), face.boundingBox)
+                            }
 
-                                    // --- BACA SEMUA DATA ---
-                                    headEulerAngleX = firstFace.headEulerAngleX
-                                    headEulerAngleY = firstFace.headEulerAngleY
-                                    firstFace.leftEyeOpenProbability?.let { leftEyeOpenProb = it }
-                                    firstFace.rightEyeOpenProbability?.let { rightEyeOpenProb = it }
-                                    firstFace.smilingProbability?.let { smileProb = it } // <-- BACA SENYUM
+                            // Enrollment Logic
+                            val curEmb = faceEmbedding
+                            if (curEmb != null && enrollmentState != EnrollmentState.IDLE && enrollmentState != EnrollmentState.FINISHED) {
+                                val isCenter = headEulerAngleY > -10 && headEulerAngleY < 10
+                                val isLeft = headEulerAngleY > 30
+                                val isRight = headEulerAngleY < -30
+                                val isSmiling = smileProb > 0.6
 
-                                    val originalBitmap = imageProxy.toBitmap()
-                                    if (originalBitmap != null) {
-                                        val softwareBitmap = originalBitmap.copy(Bitmap.Config.ARGB_8888, true)
-                                        faceEmbedding = faceNetModel.getFaceEmbedding(softwareBitmap, firstFace.boundingBox)
+                                when(enrollmentState) {
+                                    EnrollmentState.GET_CENTER_NEUTRAL -> if(isCenter && !isSmiling) {
+                                        enrollmentState = EnrollmentState.SENDING_CENTER_NEUTRAL
+                                        registerAngle(curEmb, EnrollmentState.GET_CENTER_SMILE)
                                     }
-
-                                    // --- Cek Liveness (jika diminta) ---
-                                    if (livenessState == LivenessState.WAITING_FOR_BLINK) {
-                                        if (leftEyeOpenProb < 0.3 && rightEyeOpenProb < 0.3) {
-                                            livenessState = LivenessState.BLINK_DETECTED
-                                        }
+                                    EnrollmentState.GET_CENTER_SMILE -> if(isCenter && isSmiling) {
+                                        enrollmentState = EnrollmentState.SENDING_CENTER_SMILE
+                                        registerAngle(curEmb, EnrollmentState.GET_LEFT)
                                     }
-
-                                    // --- Cek Wizard Pendaftaran (jika sedang berjalan) ---
-                                    val currentEmbedding = faceEmbedding
-                                    if (currentEmbedding != null && appState == AppState.IDLE) {
-
-                                        // Variabel helper
-                                        val isSmiling = smileProb > 0.8 // 80% smile
-                                        val isLookingLeft = headEulerAngleY > 30
-                                        val isLookingRight = headEulerAngleY < -30
-                                        val isLookingCenterH = headEulerAngleY > -10 && headEulerAngleY < 10
-
-                                        when (enrollmentState) {
-                                            EnrollmentState.GET_CENTER_NEUTRAL -> {
-                                                if (isLookingCenterH && !isSmiling) {
-                                                    enrollmentState = EnrollmentState.SENDING_CENTER_NEUTRAL
-                                                    registerAngle(currentEmbedding, EnrollmentState.GET_CENTER_SMILE)
-                                                }
-                                            }
-                                            EnrollmentState.GET_CENTER_SMILE -> {
-                                                if (isLookingCenterH && isSmiling) {
-                                                    enrollmentState = EnrollmentState.SENDING_CENTER_SMILE
-                                                    registerAngle(currentEmbedding, EnrollmentState.GET_LEFT)
-                                                }
-                                            }
-                                            EnrollmentState.GET_LEFT -> {
-                                                if (isLookingLeft) {
-                                                    enrollmentState = EnrollmentState.SENDING_LEFT
-                                                    registerAngle(currentEmbedding, EnrollmentState.GET_RIGHT)
-                                                }
-                                            }
-                                            EnrollmentState.GET_RIGHT -> {
-                                                if (isLookingRight) {
-                                                    enrollmentState = EnrollmentState.SENDING_RIGHT
-                                                    registerAngle(currentEmbedding, EnrollmentState.FINISHED)
-                                                }
-                                            }
-                                            else -> {}
-                                        }
+                                    EnrollmentState.GET_LEFT -> if(isLeft) {
+                                        enrollmentState = EnrollmentState.SENDING_LEFT
+                                        registerAngle(curEmb, EnrollmentState.GET_RIGHT)
                                     }
-
-                                } else {
-                                    faceEmbedding = null
+                                    EnrollmentState.GET_RIGHT -> if(isRight) {
+                                        enrollmentState = EnrollmentState.SENDING_RIGHT
+                                        registerAngle(curEmb, EnrollmentState.FINISHED)
+                                    }
+                                    else -> {}
                                 }
                             }
-                            .addOnFailureListener { e -> Log.e("FaceDetection", "Deteksi wajah gagal", e) }
-                            .addOnCompleteListener { imageProxy.close() }
-                    } else {
-                        imageProxy.close()
-                    }
-                }
+                        } else { faceEmbedding = null }
+                    }.addOnCompleteListener { imageProxy.close() }
+                } else { imageProxy.close() }
             }
+        }
     }
 
-    Scaffold(
-        topBar = { TopAppBar(title = { Text("Presensi Wajah") }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = MaterialTheme.colorScheme.onPrimary)) }
-    ) { paddingValues ->
+    // --- TAMPILAN UI BERDASARKAN STATE ---
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .verticalScroll(rememberScrollState())
-        ) {
-
-            // =========================================================
-            // ▼▼▼ BOX KAMERA SEKARANG DENGAN OVAL GUIDE ▼▼▼
-            // =========================================================
-            Box(modifier = Modifier
-                .fillMaxWidth()
-                .height(400.dp)) {
-
-                // 1. Kamera (di paling bawah)
-                CameraView(modifier = Modifier.fillMaxSize(), analyzer = imageAnalyzer, lifecycleOwner = lifecycleOwner)
-
-                // 2. Overlay Wajah (Kuning)
-                FaceOverlay(modifier = Modifier.fillMaxSize(), faces = detectedFaces, imageSize = imageSize)
-
-                // 3. OVAL GUIDE (di atas segalanya)
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val ovalWidth = size.width * 0.7f // 70% lebar
-                    val ovalHeight = ovalWidth * 1.3f // oval potrait
-
-                    drawOval(
-                        color = Color.White.copy(alpha = 0.6f),
-                        topLeft = Offset(
-                            x = (size.width - ovalWidth) / 2, // Center H
-                            y = (size.height - ovalHeight) / 2 // Center V
-                        ),
-                        size = androidx.compose.ui.geometry.Size(ovalWidth, ovalHeight),
-                        style = Stroke(width = 4.dp.toPx()) // Garis
-                    )
-                }
-
-                // 4. Teks Status
-                Text(
-                    text = if (faceEmbedding != null) "Wajah Terdeteksi" else "Arahkan ke Wajah",
-                    color = Color.White, modifier = Modifier.align(Alignment.TopCenter).padding(8.dp)
+    if (enrollmentState == EnrollmentState.IDLE) {
+        // =================================
+        // TAMPILAN 1: FORM INPUT (BERSIH)
+        // =================================
+        Scaffold(
+            topBar = {
+                CenterAlignedTopAppBar(
+                    title = { Text("Pendaftaran User Baru") },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) }
+                    }
                 )
             }
-            // =========================================================
-            // ▲▲▲ AKHIR DARI BOX KAMERA ▲▲▲
-            // =========================================================
+        ) { padding ->
+            Column(
+                modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Spacer(modifier = Modifier.height(24.dp))
+                Icon(Icons.Default.Badge, null, modifier = Modifier.size(80.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.height(32.dp))
 
-            TabRow(selectedTabIndex = selectedTabIndex) {
-                Tab(
-                    selected = selectedTabIndex == 0,
-                    onClick = { selectedTabIndex = 0; currentMessage = "" },
-                    text = { Text("PRESENSI") }
+                OutlinedTextField(
+                    value = regUserId, onValueChange = { regUserId = it },
+                    label = { Text("Nomor ID / NIK") },
+                    modifier = Modifier.fillMaxWidth(),
+                    leadingIcon = { Icon(Icons.Default.Fingerprint, null) },
+                    singleLine = true
                 )
-                Tab(
-                    selected = selectedTabIndex == 1,
+                Spacer(modifier = Modifier.height(16.dp))
+                OutlinedTextField(
+                    value = regUserName, onValueChange = { regUserName = it },
+                    label = { Text("Nama Lengkap") },
+                    modifier = Modifier.fillMaxWidth(),
+                    leadingIcon = { Icon(Icons.Default.Person, null) },
+                    singleLine = true
+                )
+
+                Spacer(modifier = Modifier.height(48.dp))
+
+                Button(
                     onClick = {
-                        selectedTabIndex = 1
-                        currentMessage = ""
-                        enrollmentState = EnrollmentState.IDLE
-                        enrollmentMessage = ""
-                    },
-                    text = { Text("DAFTAR WAJAH") }
-                )
-            }
-
-            if (appState == AppState.LOADING || enrollmentState.name.startsWith("SENDING")) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            }
-
-            Column(modifier = Modifier.padding(16.dp)) {
-                if (currentMessage.isNotBlank()) {
-                    Text(currentMessage, fontWeight = FontWeight.Bold, color = if (currentMessage.startsWith("Error")) Color.Red else Color(0xFF4CAF50))
-                    Spacer(modifier = Modifier.height(16.dp))
-                }
-
-                when (selectedTabIndex) {
-                    // === TAB PRESENSI ===
-                    0 -> Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-
-                        if (livenessState == LivenessState.WAITING_FOR_BLINK) {
-                            Text("Posisikan wajah di OVAL, lalu KEDIPKAN MATA ANDA",
-                                color = Color.Blue, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                        if (regUserId.isNotBlank() && regUserName.isNotBlank()) {
+                            // PINDAH KE MODE KAMERA
+                            enrollmentState = EnrollmentState.GET_CENTER_NEUTRAL
                         } else {
-                            Text("Posisikan wajah Anda di dalam OVAL dan tekan tombol di bawah.")
+                            currentMessage = "Mohon lengkapi semua data."
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("LANJUT AMBIL FOTO", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
+
+                if (currentMessage.isNotBlank()) {
+                    Text(currentMessage, color = Color.Red, modifier = Modifier.padding(top = 16.dp))
+                }
+            }
+        }
+    } else {
+        // =================================
+        // TAMPILAN 2: KAMERA FULL SCREEN
+        // =================================
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            CameraView(modifier = Modifier.fillMaxSize(), analyzer = imageAnalyzer, lifecycleOwner = lifecycleOwner)
+
+            // Flash & Guide (Flash selalu ON selama proses daftar)
+            val isProcessing = enrollmentState != EnrollmentState.FINISHED
+            FlashAndOvalOverlay(imageSize = imageSize, isFlashOn = isProcessing)
+
+            // Back Button (Kecil di pojok)
+            IconButton(
+                onClick = { enrollmentState = EnrollmentState.IDLE }, // Balik ke Form
+                modifier = Modifier.padding(top = 48.dp, start = 16.dp).background(Color.Black.copy(0.5f), CircleShape)
+            ) {
+                Icon(Icons.Default.ArrowBack, null, tint = Color.White)
+            }
+
+            // INSTRUKSI ABA-ABA (Besar di Atas)
+            if (enrollmentState != EnrollmentState.FINISHED) {
+                Card(
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 100.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.Black.copy(0.7f)),
+                    shape = RoundedCornerShape(24.dp)
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(24.dp)) {
+                        val instructionText = when(enrollmentState) {
+                            EnrollmentState.GET_CENTER_NEUTRAL, EnrollmentState.SENDING_CENTER_NEUTRAL -> "1. Lihat Lurus & Wajah Datar"
+                            EnrollmentState.GET_CENTER_SMILE, EnrollmentState.SENDING_CENTER_SMILE -> "2. Sekarang SENYUM LEBAR :D"
+                            EnrollmentState.GET_LEFT, EnrollmentState.SENDING_LEFT -> "3. Tengok Kiri Pelan-pelan"
+                            EnrollmentState.GET_RIGHT, EnrollmentState.SENDING_RIGHT -> "4. Tengok Kanan Pelan-pelan"
+                            else -> "Memproses..."
                         }
 
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Button(
-                            onClick = {
-                                val embeddingAtClick = faceEmbedding
-                                if (embeddingAtClick == null) {
-                                    currentMessage = "Error: Wajah hilang. Posisikan di oval."
-                                    return@Button
-                                }
-
-                                currentMessage = "Memulai Liveness Check..."
-                                livenessState = LivenessState.WAITING_FOR_BLINK
-                                appState = AppState.LOADING
-
-                                coroutineScope.launch {
-                                    var timeout = 0
-                                    while (livenessState != LivenessState.BLINK_DETECTED && timeout < 100) {
-                                        delay(50)
-                                        timeout++
-                                    }
-
-                                    if (livenessState == LivenessState.BLINK_DETECTED) {
-                                        currentMessage = "Liveness Sukses! Mencocokkan..."
-                                        try {
-                                            val response = ApiService.recognizeFace(embeddingAtClick.toList())
-                                            onRecognitionSuccess(response)
-                                        } catch (e: ClientRequestException) {
-                                            currentMessage = if (e.response.status == HttpStatusCode.NotFound) {
-                                                "Error: Wajah tidak dikenali. (Skor di bawah 90%)"
-                                            } else {
-                                                "Error Server: ${e.response.status.description}"
-                                            }
-                                            appState = AppState.IDLE
-                                        } catch (e: Exception) {
-                                            currentMessage = "Error Koneksi: Periksa jaringan Anda."
-                                            appState = AppState.IDLE
-                                        }
-                                    } else {
-                                        currentMessage = "Error: Liveness Gagal. Anda tidak berkedip."
-                                        appState = AppState.IDLE
-                                    }
-
-                                    livenessState = LivenessState.IDLE
-                                }
-                            },
-                            enabled = faceEmbedding != null && appState == AppState.IDLE,
-                            modifier = Modifier.fillMaxWidth().height(48.dp)
-                        ) {
-                            Text("LAKUKAN PRESENSI SEKARANG")
-                        }
+                        Text(instructionText, color = Color.Yellow, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
+                        if (currentMessage.isNotBlank()) Text(currentMessage, color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(top = 8.dp))
                     }
-
-                    // === TAB DAFTAR (Ide 2 - 4 Angle) ===
-                    1 -> Column(modifier = Modifier.fillMaxWidth()) {
-
-                        OutlinedTextField(
-                            value = regUserId,
-                            onValueChange = { regUserId = it },
-                            label = { Text("User ID (NPM/Email)") },
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = enrollmentState == EnrollmentState.IDLE
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        OutlinedTextField(
-                            value = regUserName,
-                            onValueChange = { regUserName = it },
-                            label = { Text("Nama Lengkap") },
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = enrollmentState == EnrollmentState.IDLE
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        Button(
-                            onClick = {
-                                if(regUserId.isBlank() || regUserName.isBlank()) {
-                                    currentMessage = "Error: Isi ID dan Nama lebih dulu."
-                                } else {
-                                    enrollmentState = EnrollmentState.GET_CENTER_NEUTRAL
-                                    currentMessage = ""
-                                }
-                            },
-                            enabled = appState == AppState.IDLE && enrollmentState == EnrollmentState.IDLE && faceEmbedding != null
-                        ) {
-                            Text("Mulai Pendaftaran Terpandu (4 Angle)")
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        val instructionColor = Color.Blue
-                        if (enrollmentMessage.isNotBlank()) {
-                            Text(enrollmentMessage, modifier = Modifier.padding(top = 8.dp))
-                        }
-
-                        when (enrollmentState) {
-                            EnrollmentState.IDLE -> {
-                                Text("Posisikan wajah Anda di dalam OVAL, lalu tekan 'Mulai'.")
-                            }
-                            EnrollmentState.GET_CENTER_NEUTRAL, EnrollmentState.SENDING_CENTER_NEUTRAL -> {
-                                Text("1/4: Wajah di OVAL, lihat LURUS & NETRAL...", fontWeight = FontWeight.Bold, color = instructionColor)
-                            }
-                            EnrollmentState.GET_CENTER_SMILE, EnrollmentState.SENDING_CENTER_SMILE -> {
-                                Text("2/4: Wajah di OVAL, lihat LURUS & SENYUM LEBAR!", fontWeight = FontWeight.Bold, color = instructionColor)
-                            }
-                            EnrollmentState.GET_LEFT, EnrollmentState.SENDING_LEFT -> {
-                                Text("3/4: Wajah di OVAL, TENGOK KE KIRI...", fontWeight = FontWeight.Bold, color = instructionColor)
-                            }
-                            EnrollmentState.GET_RIGHT, EnrollmentState.SENDING_RIGHT -> {
-                                Text("4/4: Wajah di OVAL, TENGOK KE KANAN...", fontWeight = FontWeight.Bold, color = instructionColor)
-                            }
-                            EnrollmentState.FINISHED -> {
-                                Text("Pendaftaran Selesai! 4 angle telah tersimpan.", fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
-                                Button(onClick = { enrollmentState = EnrollmentState.IDLE }) {
-                                    Text("Daftarkan Ulang / Tambah Angle")
-                                }
-                            }
+                }
+            } else {
+                // Tampilan Selesai
+                Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(0.8f)), contentAlignment = Alignment.Center) {
+                    Card(modifier = Modifier.padding(32.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                        Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.CheckCircle, null, tint = Color.Green, modifier = Modifier.size(64.dp))
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text("PENDAFTARAN SELESAI!", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                            Spacer(modifier = Modifier.height(24.dp))
+                            Button(onClick = {
+                                enrollmentState = EnrollmentState.IDLE
+                                regUserId = ""
+                                regUserName = ""
+                            }, modifier = Modifier.fillMaxWidth()) { Text("Tambah User Baru") }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Kembali ke Menu Utama") }
                         }
                     }
                 }
@@ -478,31 +554,39 @@ fun FaceDetectionScreen(
     }
 }
 
-// --- Composable BARU untuk Layar Sukses ---
+// ==========================================
+// HELPER: FLASH & OVAL OVERLAY
+// ==========================================
 @Composable
-fun AttendanceResultScreen(result: RecognizeResponse, onBack: () -> Unit) {
-    Box(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("PRESENSI SUKSES!", style = MaterialTheme.typography.headlineMedium, color = Color(0xFF4CAF50), fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(16.dp))
-            Text("Selamat datang,", style = MaterialTheme.typography.titleLarge)
-            Text(result.name, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(8.dp))
-            Text("ID: ${result.user_id}", style = MaterialTheme.typography.bodyLarge)
-            Text("Kecocokan: ${"%.2f".format(result.similarity * 100)}%", style = MaterialTheme.typography.bodyLarge)
-            Spacer(modifier = Modifier.height(32.dp))
-            Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
-                Text("OK")
-            }
+fun FlashAndOvalOverlay(imageSize: Size, isFlashOn: Boolean) {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val ovalWidth = size.width * 0.65f
+        val ovalHeight = ovalWidth * 1.3f
+        val ovalLeft = (size.width - ovalWidth) / 2
+        val ovalTop = (size.height - ovalHeight) / 2
+        val ovalRect = Rect(ovalLeft, ovalTop, ovalLeft + ovalWidth, ovalTop + ovalHeight)
+
+        // Flash Logic:
+        // Saat Presensi/Daftar Aktif -> PUTIH (100%) untuk pencahayaan
+        // Saat Idle/Fokus -> HITAM Transparan
+        val overlayColor = if (isFlashOn) Color.White else Color.Black.copy(alpha = 0.6f)
+
+        val path = Path().apply {
+            addRect(Rect(0f, 0f, size.width, size.height))
+            addOval(ovalRect)
+            fillType = PathFillType.EvenOdd
         }
+
+        drawPath(path, overlayColor)
+
+        drawOval(
+            color = if(isFlashOn) Color.Blue else Color.White,
+            topLeft = Offset(ovalLeft, ovalTop),
+            size = Size(ovalWidth, ovalHeight),
+            style = Stroke(width = 4.dp.toPx())
+        )
     }
 }
-
-
-// --- Composable Bawaan (Tidak Berubah) ---
 
 @Composable
 fun CameraView(modifier: Modifier = Modifier, analyzer: ImageAnalysis, lifecycleOwner: androidx.lifecycle.LifecycleOwner) {
@@ -513,37 +597,17 @@ fun CameraView(modifier: Modifier = Modifier, analyzer: ImageAnalysis, lifecycle
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
             val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
-            val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
             try {
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, preview, analyzer)
-            } catch (exc: Exception) {
-                Log.e("CameraView", "Gagal bind use cases", exc)
-            }
+                cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_FRONT_CAMERA, preview, analyzer)
+            } catch (exc: Exception) { Log.e("CameraView", "Gagal", exc) }
         }, ContextCompat.getMainExecutor(context))
-    }
-}
-@Composable
-fun FaceOverlay(modifier: Modifier = Modifier, faces: List<Face>, imageSize: Size) {
-    Canvas(modifier = modifier) {
-        if (imageSize.width == 0f || imageSize.height == 0f) return@Canvas
-        val scaleX = size.width / imageSize.height
-        val scaleY = size.height / imageSize.width
-        faces.forEach { face ->
-            val boundingBox = face.boundingBox
-            drawRect(
-                color = Color.Yellow,
-                topLeft = androidx.compose.ui.geometry.Offset(x = size.width - (boundingBox.exactCenterX() * scaleX) - (boundingBox.width() / 2f * scaleX), y = boundingBox.exactCenterY() * scaleY - (boundingBox.height() / 2f * scaleY)),
-                size = androidx.compose.ui.geometry.Size(width = boundingBox.width() * scaleX, height = boundingBox.height() * scaleY),
-                style = Stroke(width = 2.dp.toPx())
-            )
-        }
     }
 }
 
 @Composable
 fun PermissionDeniedScreen() {
-    Box(modifier = Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
-        Text("Izin kamera ditolak. Aplikasi ini memerlukan izin kamera untuk mendeteksi wajah. Silakan aktifkan izin melalui pengaturan aplikasi.", textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyLarge)
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text("Butuh izin kamera.", textAlign = TextAlign.Center)
     }
 }
